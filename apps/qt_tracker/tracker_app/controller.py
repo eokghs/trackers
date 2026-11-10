@@ -74,34 +74,126 @@ class AppController(QObject):
         return names if names else ["Camera 0"]
 
     cameras = Property(list, _get_cameras, notify=camerasChanged)
-    trackerNames = Property(list, lambda self: list(TRACKER_NAMES), constant=True)
-    masksAvailable = Property(bool, lambda self: self._masks_available, constant=True)
-    candidateSources = Property(list, lambda self: list(CANDIDATE_SOURCES), constant=True)
-    detectorModels = Property(list, lambda self: list(DETECTOR_MODEL_PRESETS), constant=True)
-    detectorAvailable = Property(bool, lambda self: self._detector_available, constant=True)
 
-    running = Property(bool, lambda self: self._running, notify=stateChanged)
-    paused = Property(bool, lambda self: self._paused, notify=stateChanged)
-    saving = Property(bool, lambda self: self._saving, notify=stateChanged)
-    savePath = Property(str, lambda self: self._save_path, notify=stateChanged)
-    sourceLabel = Property(str, lambda self: self._source_label, notify=stateChanged)
-    resolution = Property(str, lambda self: self._resolution, notify=stateChanged)
+    def _get_tracker_names(self) -> list:
+        return list(TRACKER_NAMES)
 
-    status = Property(str, lambda self: self._status, notify=trackChanged)
-    targetId = Property(int, lambda self: self._target_id, notify=trackChanged)
-    score = Property(float, lambda self: self._score, notify=trackChanged)
+    trackerNames = Property(list, _get_tracker_names, constant=True)
 
-    fps = Property(float, lambda self: self._fps, notify=statsChanged)
-    frameIndex = Property(int, lambda self: self._frame_index, notify=statsChanged)
-    frameCount = Property(int, lambda self: self._frame_count, notify=statsChanged)
+    def _get_masks_available(self) -> bool:
+        return self._masks_available
 
-    trackerName = Property(str, lambda self: self._tracker_name, notify=settingsChanged)
-    gateWidth = Property(int, lambda self: self._gate_w, notify=settingsChanged)
-    gateHeight = Property(int, lambda self: self._gate_h, notify=settingsChanged)
-    useMasks = Property(bool, lambda self: self._use_masks, notify=settingsChanged)
-    showCandidates = Property(bool, lambda self: self._show_candidates, notify=settingsChanged)
-    candidateSource = Property(str, lambda self: self._candidate_source, notify=settingsChanged)
-    detectorModel = Property(str, lambda self: self._detector_model, notify=settingsChanged)
+    masksAvailable = Property(bool, _get_masks_available, constant=True)
+
+    def _get_candidate_sources(self) -> list:
+        return list(CANDIDATE_SOURCES)
+
+    candidateSources = Property(list, _get_candidate_sources, constant=True)
+
+    def _get_detector_models(self) -> list:
+        return list(DETECTOR_MODEL_PRESETS)
+
+    detectorModels = Property(list, _get_detector_models, constant=True)
+
+    def _get_detector_available(self) -> bool:
+        return self._detector_available
+
+    detectorAvailable = Property(bool, _get_detector_available, constant=True)
+
+    def _get_running(self) -> bool:
+        return self._running
+
+    running = Property(bool, _get_running, notify=stateChanged)
+
+    def _get_paused(self) -> bool:
+        return self._paused
+
+    paused = Property(bool, _get_paused, notify=stateChanged)
+
+    def _get_saving(self) -> bool:
+        return self._saving
+
+    saving = Property(bool, _get_saving, notify=stateChanged)
+
+    def _get_save_path(self) -> str:
+        return self._save_path
+
+    savePath = Property(str, _get_save_path, notify=stateChanged)
+
+    def _get_source_label(self) -> str:
+        return self._source_label
+
+    sourceLabel = Property(str, _get_source_label, notify=stateChanged)
+
+    def _get_resolution(self) -> str:
+        return self._resolution
+
+    resolution = Property(str, _get_resolution, notify=stateChanged)
+
+    def _get_status(self) -> str:
+        return self._status
+
+    status = Property(str, _get_status, notify=trackChanged)
+
+    def _get_target_id(self) -> int:
+        return self._target_id
+
+    targetId = Property(int, _get_target_id, notify=trackChanged)
+
+    def _get_score(self) -> float:
+        return self._score
+
+    score = Property(float, _get_score, notify=trackChanged)
+
+    def _get_fps(self) -> float:
+        return self._fps
+
+    fps = Property(float, _get_fps, notify=statsChanged)
+
+    def _get_frame_index(self) -> int:
+        return self._frame_index
+
+    frameIndex = Property(int, _get_frame_index, notify=statsChanged)
+
+    def _get_frame_count(self) -> int:
+        return self._frame_count
+
+    frameCount = Property(int, _get_frame_count, notify=statsChanged)
+
+    def _get_tracker_name(self) -> str:
+        return self._tracker_name
+
+    trackerName = Property(str, _get_tracker_name, notify=settingsChanged)
+
+    def _get_gate_width(self) -> int:
+        return self._gate_w
+
+    gateWidth = Property(int, _get_gate_width, notify=settingsChanged)
+
+    def _get_gate_height(self) -> int:
+        return self._gate_h
+
+    gateHeight = Property(int, _get_gate_height, notify=settingsChanged)
+
+    def _get_use_masks(self) -> bool:
+        return self._use_masks
+
+    useMasks = Property(bool, _get_use_masks, notify=settingsChanged)
+
+    def _get_show_candidates(self) -> bool:
+        return self._show_candidates
+
+    showCandidates = Property(bool, _get_show_candidates, notify=settingsChanged)
+
+    def _get_candidate_source(self) -> str:
+        return self._candidate_source
+
+    candidateSource = Property(str, _get_candidate_source, notify=settingsChanged)
+
+    def _get_detector_model(self) -> str:
+        return self._detector_model
+
+    detectorModel = Property(str, _get_detector_model, notify=settingsChanged)
 
     # ================================================================ view
     @Slot(QObject)
