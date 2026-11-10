@@ -9,6 +9,7 @@
 from __future__ import annotations
 
 import queue
+import sys
 import time
 from collections.abc import Callable
 from dataclasses import dataclass
@@ -62,6 +63,35 @@ def to_qimage(frame_bgr: np.ndarray) -> QImage:
 
 
 Command = Callable[["VideoWorker"], None]
+
+# Consecutive failed camera reads tolerated before the live feed is reported as lost.
+MAX_CAMERA_READ_FAILURES = 30
+
+
+def open_camera(index: int) -> cv2.VideoCapture | None:
+    """Open a camera, trying the backends that work best on this platform first.
+
+    On Windows the DirectShow backend is tried before Media Foundation (MSMF), whose
+    asynchronous reader fails on some webcams with ``can't grab frame`` errors.
+    A backend counts as working only once it has delivered a frame.
+
+    Args:
+        index: Camera index.
+
+    Returns:
+        An opened capture, or ``None`` when no backend delivers frames.
+    """
+    backends = [cv2.CAP_DSHOW, cv2.CAP_MSMF, cv2.CAP_ANY] if sys.platform == "win32" else [cv2.CAP_ANY]
+    for backend in backends:
+        capture = cv2.VideoCapture(index, backend)
+        if capture.isOpened():
+            for _ in range(10):  # some cameras need a few reads to warm up
+                ok, _frame = capture.read()
+                if ok:
+                    return capture
+                time.sleep(0.05)
+        capture.release()
+    return None
 
 
 class VideoWorker(QThread):
@@ -164,10 +194,10 @@ class VideoWorker(QThread):
 
     def _open_capture(self) -> cv2.VideoCapture | None:
         if self._source.kind == "camera":
-            capture = cv2.VideoCapture(self._source.camera_index)
+            capture = open_camera(self._source.camera_index)
         else:
             capture = cv2.VideoCapture(self._source.path)
-        if not capture.isOpened():
+        if capture is None or not capture.isOpened():
             self.sourceFailed.emit(f"Cannot open {self._source.describe()}")
             return None
         fps = capture.get(cv2.CAP_PROP_FPS)
@@ -197,6 +227,7 @@ class VideoWorker(QThread):
         frame_period = 1.0 / self.fps
         next_due = time.perf_counter()
         fps_window: list[float] = []
+        read_failures = 0
         while not self._stop:
             self._run_commands()
             if self.paused and self.frame is not None:
@@ -210,8 +241,13 @@ class VideoWorker(QThread):
                 if is_file:
                     self.sourceEnded.emit()
                     break
-                self.sourceFailed.emit("Camera stopped delivering frames")
+                read_failures += 1
+                if read_failures < MAX_CAMERA_READ_FAILURES:
+                    time.sleep(0.03)
+                    continue
+                self.sourceFailed.emit("Camera stopped delivering frames. Is another app using it?")
                 break
+            read_failures = 0
             frame_index += 1
             started = time.perf_counter()
             self.frame = frame

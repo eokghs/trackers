@@ -396,6 +396,7 @@ class AppController(QObject):
         self._worker = None
         worker.request_stop()
         worker.wait(5000)
+        worker.deleteLater()
         self._running = False
         self._paused = False
         self._saving = False
@@ -442,7 +443,13 @@ class AppController(QObject):
 
     @Slot()
     def _on_worker_finished(self) -> None:
-        if self.sender() is not None and self._worker is not None and self.sender() is not self._worker:
+        sender = self.sender()
+        if isinstance(sender, VideoWorker):
+            # ``finished`` fires just before the thread exits: wait for it, then let Qt delete
+            # the object. Dropping the last Python reference to a still-running QThread aborts the app.
+            sender.wait(2000)
+            sender.deleteLater()
+        if sender is not None and self._worker is not None and sender is not self._worker:
             return
         self._worker = None
         self._running = False
