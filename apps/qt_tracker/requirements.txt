@@ -1,0 +1,3 @@
+# Install from the repository root:  pip install -r apps/qt_tracker/requirements.txt
+PySide6>=6.5
+-e .
