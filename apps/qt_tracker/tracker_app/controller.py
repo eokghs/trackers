@@ -11,7 +11,12 @@ from __future__ import annotations
 from PySide6.QtCore import Property, QObject, QUrl, Signal, Slot
 from PySide6.QtMultimedia import QMediaDevices
 
-from tracker_app.detector import DEFAULT_DETECTOR_MODEL, DETECTOR_MODEL_PRESETS, detector_available
+from tracker_app.detector import (
+    DEFAULT_DETECTOR_MODEL,
+    default_detector_model,
+    detector_available,
+    detector_model_presets,
+)
 from tracker_app.engine import (
     CANDIDATE_SOURCES,
     DEFAULT_GATE_SIZE,
@@ -64,7 +69,8 @@ class AppController(QObject):
         self._masks_available = masks_available()
         self._detector_available = detector_available()
         self._candidate_source = TEMPLATE_SOURCE
-        self._detector_model = DEFAULT_DETECTOR_MODEL
+        self._detector_models = detector_model_presets()
+        self._detector_model = default_detector_model()
         self._media_devices = QMediaDevices(self)
         self._media_devices.videoInputsChanged.connect(self.camerasChanged)
 
@@ -91,9 +97,9 @@ class AppController(QObject):
     candidateSources = Property(list, _get_candidate_sources, constant=True)
 
     def _get_detector_models(self) -> list:
-        return list(DETECTOR_MODEL_PRESETS)
+        return list(self._detector_models)
 
-    detectorModels = Property(list, _get_detector_models, constant=True)
+    detectorModels = Property(list, _get_detector_models, notify=settingsChanged)
 
     def _get_detector_available(self) -> bool:
         return self._detector_available
@@ -302,11 +308,16 @@ class AppController(QObject):
     @Slot(str, str)
     def setCandidateSource(self, name: str, model_id: str) -> None:
         """Choose template matching or the detector (with model ``model_id``)."""
-        model_id = model_id.strip() or DEFAULT_DETECTOR_MODEL
+        model_id = _local_path(model_id.strip()) or DEFAULT_DETECTOR_MODEL
+        if model_id not in self._detector_models:
+            self._detector_models.insert(0, model_id)
         if name not in CANDIDATE_SOURCES or (name, model_id) == (self._candidate_source, self._detector_model):
             return
         if name != TEMPLATE_SOURCE and not self._detector_available:
-            self.message.emit("The YOLO detector needs inference-models: pip install 'trackers[detection]'")
+            self.message.emit(
+                "No YOLO backend found: install ultralytics, put it in C:\\Ultralytics\\Yolo26, "
+                "or pip install 'trackers[detection]'"
+            )
             self.settingsChanged.emit()
             return
         self._candidate_source, self._detector_model = name, model_id

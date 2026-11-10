@@ -4,7 +4,7 @@
 # Licensed under the Apache License, Version 2.0 [see LICENSE for details]
 # ------------------------------------------------------------------------
 
-"""Object-detector candidate source (YOLO / RF-DETR via ``inference-models``).
+"""Object-detector candidate source (YOLO via Ultralytics, or YOLO / RF-DETR via ``inference-models``).
 
 Instead of template matching, every frame is run through a pretrained detector
 and its boxes become the tracker's detections. On click, the detection under the
@@ -14,8 +14,12 @@ same class, which removes most distractors before association.
 
 from __future__ import annotations
 
+import importlib
 import importlib.util
+import os
+import sys
 from collections.abc import Callable
+from pathlib import Path
 from typing import cast
 
 import numpy as np
@@ -23,45 +27,140 @@ import supervision as sv
 
 from tracker_app.candidates import Candidates
 
+ULTRALYTICS_DIR_ENV = "TRACKER_ULTRALYTICS_DIR"
+DEFAULT_ULTRALYTICS_DIR = r"C:\Ultralytics\Yolo26"
+ULTRALYTICS_SUFFIXES = (".pt", ".onnx", ".engine", ".torchscript", ".mlpackage", ".openvino")
+
 DEFAULT_DETECTOR_MODEL = "yolov8n-640"
-DETECTOR_MODEL_PRESETS: tuple[str, ...] = ("yolov8n-640", "yolov8s-640", "yolov8m-640", "rfdetr-nano")
+INFERENCE_MODEL_PRESETS: tuple[str, ...] = ("yolov8n-640", "yolov8s-640", "yolov8m-640", "rfdetr-nano")
 
 Detector = Callable[[np.ndarray], sv.Detections]
 
 
-def detector_available() -> bool:
+def ultralytics_dir() -> Path:
+    """Folder holding a local Ultralytics install and its ``weights`` (``TRACKER_ULTRALYTICS_DIR`` overrides)."""
+    return Path(os.environ.get(ULTRALYTICS_DIR_ENV, DEFAULT_ULTRALYTICS_DIR))
+
+
+def _ensure_ultralytics_importable() -> bool:
+    """Make ``ultralytics`` importable, adding the local Ultralytics folder to ``sys.path`` if needed.
+
+    The folder is appended (not prepended) so the app's own NumPy / OpenCV keep precedence.
+    """
+    if importlib.util.find_spec("ultralytics") is not None:
+        return True
+    folder = ultralytics_dir()
+    if (folder / "ultralytics").is_dir() and str(folder) not in sys.path:
+        sys.path.append(str(folder))
+        importlib.invalidate_caches()
+    return importlib.util.find_spec("ultralytics") is not None
+
+
+def ultralytics_available() -> bool:
+    """Return whether Ultralytics is installed or found in the local Ultralytics folder."""
+    return _ensure_ultralytics_importable()
+
+
+def inference_models_available() -> bool:
     """Return whether ``inference-models`` is installed."""
     return importlib.util.find_spec("inference_models") is not None
 
 
+def detector_available() -> bool:
+    """Return whether any detector backend (Ultralytics or ``inference-models``) is available."""
+    return ultralytics_available() or inference_models_available()
+
+
+def local_weights() -> list[str]:
+    """List YOLO weight files in the local Ultralytics folder's ``weights`` directory."""
+    folder = ultralytics_dir() / "weights"
+    if not folder.is_dir():
+        return []
+    return sorted(str(p) for p in folder.iterdir() if p.is_file() and p.suffix.lower() in ULTRALYTICS_SUFFIXES)
+
+
+def detector_model_presets() -> list[str]:
+    """Models offered in the UI: local Ultralytics weights first, then ``inference-models`` aliases."""
+    presets = local_weights()
+    if inference_models_available():
+        presets += list(INFERENCE_MODEL_PRESETS)
+    return presets
+
+
+def default_detector_model() -> str:
+    """Model selected by default: the first local weight file, else ``yolov8n-640``."""
+    presets = detector_model_presets()
+    return presets[0] if presets else DEFAULT_DETECTOR_MODEL
+
+
+def is_ultralytics_model(model_id: str) -> bool:
+    """Whether ``model_id`` is an Ultralytics weights file or name (``*.pt``, ``*.onnx``, ...)."""
+    return model_id.lower().endswith(ULTRALYTICS_SUFFIXES)
+
+
+def _resolve_device(device: str) -> str:
+    if device != "auto":
+        return device
+    import torch
+
+    return "cuda" if torch.cuda.is_available() else "cpu"
+
+
 def load_detector(model_id: str = DEFAULT_DETECTOR_MODEL, device: str = "auto") -> Detector:
-    """Load a pretrained detector with ``inference-models``.
+    """Load a pretrained detector.
+
+    Ultralytics weights (a local ``.pt`` / ``.onnx`` / ``.engine`` file, or a name such as
+    ``yolo26n.pt``) are loaded with Ultralytics; other IDs such as ``yolov8n-640`` or
+    ``rfdetr-nano`` with ``inference-models``.
 
     Args:
-        model_id: Model alias such as ``yolov8n-640`` or ``rfdetr-nano``.
+        model_id: Weights path / name or ``inference-models`` alias.
         device: ``auto``, ``cpu``, ``cuda`` or ``mps``. ``auto`` picks CUDA when available.
 
     Returns:
         A callable mapping a BGR frame to ``sv.Detections``.
 
     Raises:
-        RuntimeError: If ``inference-models`` is not installed.
+        RuntimeError: If the needed backend is missing or the model is not a detector.
     """
-    if not detector_available():
-        raise RuntimeError("The YOLO detector needs inference-models: pip install 'trackers[detection]'")
+    if is_ultralytics_model(model_id):
+        return _load_ultralytics(model_id, device)
+    if not inference_models_available():
+        raise RuntimeError(
+            f"{model_id!r} needs inference-models (pip install 'trackers[detection]'); "
+            "or pick a local Ultralytics .pt file"
+        )
     from inference_models import AutoModel
 
-    if device == "auto":
-        import torch
-
-        device = "cuda" if torch.cuda.is_available() else "cpu"
-    model = AutoModel.from_pretrained(model_id, device=device)
+    model = AutoModel.from_pretrained(model_id, device=_resolve_device(device))
 
     def detect(frame: np.ndarray) -> sv.Detections:
         predictions = model(frame)
         if not predictions:
             return sv.Detections.empty()
         return predictions[0].to_supervision()
+
+    return detect
+
+
+def _load_ultralytics(model_id: str, device: str) -> Detector:
+    if not _ensure_ultralytics_importable():
+        raise RuntimeError(
+            f"Ultralytics not found. Install it (pip install ultralytics) or set {ULTRALYTICS_DIR_ENV} "
+            f"to the folder that contains it (default {DEFAULT_ULTRALYTICS_DIR})."
+        )
+    from ultralytics import YOLO
+
+    model = YOLO(model_id)
+    if model.task == "classify":
+        raise RuntimeError(f"{Path(model_id).name} is a classification model; pick a detection model")
+    resolved = _resolve_device(device)
+
+    def detect(frame: np.ndarray) -> sv.Detections:
+        results = list(model.predict(frame, verbose=False, device=resolved))
+        if not results:
+            return sv.Detections.empty()
+        return sv.Detections.from_ultralytics(results[0])
 
     return detect
 

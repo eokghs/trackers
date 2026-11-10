@@ -11,7 +11,7 @@ Desktop app that tracks a user-selected object in a live webcam feed or a video 
 - **Stop Tracking** breaks the current track.
 - **Save** writes the processed (annotated) video to `.mp4` or `.avi` from that moment until *Stop Saving*, the source is closed, or the file ends.
 - **Tracker choice**: C-BIoU or McByte. McByte can also use its SAM + Cutie mask pipeline when the `trackers[mask]` extra is installed.
-- **Candidate source choice**: *Template matching* (default; any object, CPU only) or *YOLO detector* (pretrained YOLOv8 / RF-DETR via `inference-models`; only the detector's classes, such as people and vehicles). Switch at any time in the Tracking panel; an active target is re-selected at its current position.
+- **Candidate source choice**: *Template matching* (default; any object, CPU only) or *YOLO detector* (your own Ultralytics weights such as YOLO26 `.pt` files, or YOLOv8 / RF-DETR via `inference-models`; only the detector's classes). Switch at any time in the Tracking panel; an active target is re-selected at its current position.
 
 ## How it works
 
@@ -47,6 +47,10 @@ python -m venv .venv && source .venv/bin/activate    # Windows: .venv\Scripts\ac
 pip install -r apps/qt_tracker/requirements.txt
 python apps/qt_tracker/main.py
 ```
+
+### YOLO detector with local Ultralytics weights
+
+The app looks for a local Ultralytics install in `C:\Ultralytics\Yolo26` (override with the `TRACKER_ULTRALYTICS_DIR` environment variable). If `ultralytics` is not installed in the app's environment, that folder is added to the Python path. It must be built for the same Python version, here 3.11. Every `.pt` / `.onnx` / `.engine` file in its `weights` subfolder appears in the **Model** list, and the first one is the default. Use the **…** button to pick any other weights file. Classification models are rejected with a message.
 
 Optional extras, also from the repository root:
 

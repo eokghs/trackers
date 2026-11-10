@@ -1,5 +1,6 @@
 import QtQuick
 import QtQuick.Controls
+import QtQuick.Dialogs
 import QtQuick.Layouts
 
 GroupBox {
@@ -29,26 +30,40 @@ GroupBox {
             Layout.fillWidth: true
             model: pane.controller.candidateSources
             currentIndex: model.indexOf(pane.controller.candidateSource)
-            onActivated: pane.controller.setCandidateSource(currentText, modelBox.editText)
+            onActivated: pane.controller.setCandidateSource(currentText, pane.controller.detectorModel)
             ToolTip.visible: hovered
             ToolTip.text: pane.controller.detectorAvailable
                           ? qsTr("Template matching tracks any object; the detector tracks its known classes")
-                          : qsTr("Install the trackers[detection] extra to use the detector")
+                          : qsTr("No YOLO backend found (Ultralytics or inference-models)")
         }
 
         Label {
             text: qsTr("Model")
-            visible: modelBox.visible
+            visible: modelRow.visible
         }
-        ComboBox {
-            id: modelBox
+        RowLayout {
+            id: modelRow
             Layout.fillWidth: true
             visible: pane.controller.candidateSource === "YOLO detector"
-            editable: true
-            model: pane.controller.detectorModels
-            Component.onCompleted: editText = pane.controller.detectorModel
-            onAccepted: pane.controller.setCandidateSource(sourceBox.currentText, editText)
-            onActivated: pane.controller.setCandidateSource(sourceBox.currentText, currentText)
+            spacing: 4
+
+            ComboBox {
+                id: modelBox
+                Layout.fillWidth: true
+                model: pane.controller.detectorModels
+                currentIndex: model.indexOf(pane.controller.detectorModel)
+                displayText: pane.controller.detectorModel.split(/[\\/]/).pop()
+                onActivated: pane.controller.setCandidateSource(sourceBox.currentText, currentText)
+                ToolTip.visible: hovered
+                ToolTip.text: pane.controller.detectorModel
+            }
+            Button {
+                text: qsTr("…")
+                Layout.preferredWidth: 32
+                onClicked: weightsDialog.open()
+                ToolTip.visible: hovered
+                ToolTip.text: qsTr("Choose YOLO weights file")
+            }
         }
 
         CheckBox {
@@ -98,5 +113,13 @@ GroupBox {
             enabled: pane.controller.targetId >= 0
             onClicked: pane.controller.stopTracking()
         }
+    }
+
+    FileDialog {
+        id: weightsDialog
+        title: qsTr("Choose YOLO weights")
+        fileMode: FileDialog.OpenFile
+        nameFilters: [qsTr("YOLO weights (*.pt *.onnx *.engine)"), qsTr("All files (*)")]
+        onAccepted: pane.controller.setCandidateSource("YOLO detector", selectedFile.toString())
     }
 }

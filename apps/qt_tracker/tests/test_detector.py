@@ -104,3 +104,18 @@ def test_switch_source_keeps_target_position() -> None:
     back = engine.set_candidate_source(None)
     assert back is not None
     assert back.status is TrackStatus.TRACKING
+
+
+def test_local_weights_and_model_routing(tmp_path, monkeypatch) -> None:
+    from tracker_app import detector
+
+    (tmp_path / "weights").mkdir()
+    (tmp_path / "weights" / "yolo26_face.pt").write_bytes(b"")
+    (tmp_path / "weights" / "notes.txt").write_text("x")
+    monkeypatch.setenv(detector.ULTRALYTICS_DIR_ENV, str(tmp_path))
+    weights = detector.local_weights()
+    assert [w.rsplit("yolo26_face", 1)[1] for w in weights] == [".pt"]
+    assert detector.default_detector_model() == weights[0]
+    assert detector.is_ultralytics_model(weights[0])
+    assert detector.is_ultralytics_model("yolo26n.pt")
+    assert not detector.is_ultralytics_model("yolov8n-640")
