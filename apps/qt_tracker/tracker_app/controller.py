@@ -11,7 +11,17 @@ from __future__ import annotations
 from PySide6.QtCore import Property, QObject, QUrl, Signal, Slot
 from PySide6.QtMultimedia import QMediaDevices
 
-from tracker_app.engine import DEFAULT_GATE_SIZE, MCBYTE, TRACKER_NAMES, TrackResult, TrackStatus, masks_available
+from tracker_app.detector import DEFAULT_DETECTOR_MODEL, DETECTOR_MODEL_PRESETS, detector_available
+from tracker_app.engine import (
+    CANDIDATE_SOURCES,
+    DEFAULT_GATE_SIZE,
+    MCBYTE,
+    TEMPLATE_SOURCE,
+    TRACKER_NAMES,
+    TrackResult,
+    TrackStatus,
+    masks_available,
+)
 from tracker_app.video_item import VideoFrameItem
 from tracker_app.worker import EngineSettings, SourceSpec, VideoWorker
 
@@ -52,6 +62,9 @@ class AppController(QObject):
         self._use_masks = False
         self._show_candidates = False
         self._masks_available = masks_available()
+        self._detector_available = detector_available()
+        self._candidate_source = TEMPLATE_SOURCE
+        self._detector_model = DEFAULT_DETECTOR_MODEL
         self._media_devices = QMediaDevices(self)
         self._media_devices.videoInputsChanged.connect(self.camerasChanged)
 
@@ -63,6 +76,9 @@ class AppController(QObject):
     cameras = Property(list, _get_cameras, notify=camerasChanged)
     trackerNames = Property(list, lambda self: list(TRACKER_NAMES), constant=True)
     masksAvailable = Property(bool, lambda self: self._masks_available, constant=True)
+    candidateSources = Property(list, lambda self: list(CANDIDATE_SOURCES), constant=True)
+    detectorModels = Property(list, lambda self: list(DETECTOR_MODEL_PRESETS), constant=True)
+    detectorAvailable = Property(bool, lambda self: self._detector_available, constant=True)
 
     running = Property(bool, lambda self: self._running, notify=stateChanged)
     paused = Property(bool, lambda self: self._paused, notify=stateChanged)
@@ -84,6 +100,8 @@ class AppController(QObject):
     gateHeight = Property(int, lambda self: self._gate_h, notify=settingsChanged)
     useMasks = Property(bool, lambda self: self._use_masks, notify=settingsChanged)
     showCandidates = Property(bool, lambda self: self._show_candidates, notify=settingsChanged)
+    candidateSource = Property(str, lambda self: self._candidate_source, notify=settingsChanged)
+    detectorModel = Property(str, lambda self: self._detector_model, notify=settingsChanged)
 
     # ================================================================ view
     @Slot(QObject)
@@ -189,6 +207,21 @@ class AppController(QObject):
         if self._tracker_name == MCBYTE:
             self._reconfigure_tracker()
 
+    @Slot(str, str)
+    def setCandidateSource(self, name: str, model_id: str) -> None:
+        """Choose template matching or the detector (with model ``model_id``)."""
+        model_id = model_id.strip() or DEFAULT_DETECTOR_MODEL
+        if name not in CANDIDATE_SOURCES or (name, model_id) == (self._candidate_source, self._detector_model):
+            return
+        if name != TEMPLATE_SOURCE and not self._detector_available:
+            self.message.emit("The YOLO detector needs inference-models: pip install 'trackers[detection]'")
+            self.settingsChanged.emit()
+            return
+        self._candidate_source, self._detector_model = name, model_id
+        self.settingsChanged.emit()
+        if self._worker is not None:
+            self._worker.post(lambda worker: worker.set_candidate_source(name, model_id))
+
     @Slot(bool)
     def setShowCandidates(self, enabled: bool) -> None:
         """Toggle drawing of template-matching candidates."""
@@ -242,6 +275,8 @@ class AppController(QObject):
                 gate_size=(self._gate_w, self._gate_h),
                 use_masks=self._use_masks,
                 show_candidates=self._show_candidates,
+                candidate_source=self._candidate_source,
+                detector_model=self._detector_model,
             ),
         )
         if self._view is not None:
@@ -253,6 +288,7 @@ class AppController(QObject):
         worker.sourceEnded.connect(self._on_ended)
         worker.savingChanged.connect(self._on_saving)
         worker.engineError.connect(self.message)
+        worker.candidateSourceChanged.connect(self._on_source_changed)
         worker.finished.connect(self._on_worker_finished)
         self._worker = worker
         self._paused = False
@@ -305,6 +341,12 @@ class AppController(QObject):
         elif detail:
             self.message.emit(detail)
         self.stateChanged.emit()
+
+    @Slot(str)
+    def _on_source_changed(self, name: str) -> None:
+        if name != self._candidate_source:
+            self._candidate_source = name
+            self.settingsChanged.emit()
 
     @Slot()
     def _on_worker_finished(self) -> None:

@@ -23,6 +23,34 @@ GroupBox {
             onActivated: pane.controller.setTracker(currentText)
         }
 
+        Label { text: qsTr("Candidates") }
+        ComboBox {
+            id: sourceBox
+            Layout.fillWidth: true
+            model: pane.controller.candidateSources
+            currentIndex: model.indexOf(pane.controller.candidateSource)
+            onActivated: pane.controller.setCandidateSource(currentText, modelBox.editText)
+            ToolTip.visible: hovered
+            ToolTip.text: pane.controller.detectorAvailable
+                          ? qsTr("Template matching tracks any object; the detector tracks its known classes")
+                          : qsTr("Install the trackers[detection] extra to use the detector")
+        }
+
+        Label {
+            text: qsTr("Model")
+            visible: modelBox.visible
+        }
+        ComboBox {
+            id: modelBox
+            Layout.fillWidth: true
+            visible: pane.controller.candidateSource === "YOLO detector"
+            editable: true
+            model: pane.controller.detectorModels
+            Component.onCompleted: editText = pane.controller.detectorModel
+            onAccepted: pane.controller.setCandidateSource(sourceBox.currentText, editText)
+            onActivated: pane.controller.setCandidateSource(sourceBox.currentText, currentText)
+        }
+
         CheckBox {
             Layout.columnSpan: 2
             text: qsTr("McByte SAM + Cutie masks")
@@ -58,7 +86,7 @@ GroupBox {
 
         CheckBox {
             Layout.columnSpan: 2
-            text: qsTr("Show search candidates")
+            text: qsTr("Show candidate boxes")
             checked: pane.controller.showCandidates
             onToggled: pane.controller.setShowCandidates(checked)
         }

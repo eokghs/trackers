@@ -19,7 +19,8 @@ import numpy as np
 from PySide6.QtCore import QThread, Signal
 from PySide6.QtGui import QImage
 
-from tracker_app.engine import TrackingEngine, TrackResult, TrackStatus, annotate
+from tracker_app.detector import DetectorCandidateSource, load_detector
+from tracker_app.engine import DETECTOR_SOURCE, TEMPLATE_SOURCE, TrackingEngine, TrackResult, TrackStatus, annotate
 
 
 @dataclass(frozen=True)
@@ -49,6 +50,8 @@ class EngineSettings:
     gate_size: tuple[int, int]
     use_masks: bool
     show_candidates: bool = False
+    candidate_source: str = TEMPLATE_SOURCE
+    detector_model: str = ""
 
 
 def to_qimage(frame_bgr: np.ndarray) -> QImage:
@@ -72,6 +75,7 @@ class VideoWorker(QThread):
     sourceEnded = Signal()
     savingChanged = Signal(bool, str)
     engineError = Signal(str)
+    candidateSourceChanged = Signal(str)  # source actually in use after a switch
 
     def __init__(self, source: SourceSpec, settings: EngineSettings, parent=None) -> None:
         super().__init__(parent)
@@ -107,6 +111,23 @@ class VideoWorker(QThread):
         self.result = result
         self._emit_track(result)
         self.redraw()
+
+    def set_candidate_source(self, name: str, model_id: str) -> None:
+        """Switch between template matching and the detector, loading the model if needed."""
+        if self.engine is None:
+            return
+        source = None
+        if name == DETECTOR_SOURCE:
+            self.engineError.emit(f"Loading detector {model_id}…")
+            try:
+                source = DetectorCandidateSource(load_detector(model_id))
+            except Exception as exc:
+                self.engineError.emit(f"Detector unavailable, using template matching: {exc}")
+                name = TEMPLATE_SOURCE
+        result = self.engine.set_candidate_source(source)
+        self.candidateSourceChanged.emit(name)
+        if result is not None:
+            self.set_result(result)
 
     def start_saving(self, path: str) -> None:
         """Start writing processed frames to ``path``."""
@@ -162,6 +183,8 @@ class VideoWorker(QThread):
             self.engineError.emit(str(exc))
             capture.release()
             return None
+        if self._settings.candidate_source == DETECTOR_SOURCE:
+            self.set_candidate_source(DETECTOR_SOURCE, self._settings.detector_model)
         w = int(capture.get(cv2.CAP_PROP_FRAME_WIDTH))
         h = int(capture.get(cv2.CAP_PROP_FRAME_HEIGHT))
         self.sourceOpened.emit(self._source.describe(), self.fps, w, h)
@@ -227,6 +250,8 @@ class VideoWorker(QThread):
         self.frameReady.emit(to_qimage(annotated))
 
     def _emit_track(self, result: TrackResult) -> None:
+        if result.note:
+            self.engineError.emit(result.note)
         target = -1 if result.target_id is None else result.target_id
         self.trackUpdated.emit(result.status.value, target, result.score)
 
