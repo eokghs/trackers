@@ -117,3 +117,16 @@ def test_annotate_draws_on_copy(scene) -> None:
 def test_unknown_tracker_name() -> None:
     with pytest.raises(ValueError):
         build_tracker("SORT")
+
+
+def test_reticle_drawn_in_red_for_template_tracking(scene) -> None:
+    from tracker_app.engine import TRACKING_COLOR
+
+    engine = TrackingEngine()
+    frame = np.zeros((240, 320, 3), dtype=np.uint8)
+    result = engine.select_target(scene(0, OBJECTS), *truth(0, 0))
+    out = annotate(frame, result)
+    cx, cy = (round(v) for v in truth(0, 0))
+    # The tick above the box is drawn in red; the box centre stays clear.
+    assert tuple(out[cy - 20, cx]) == TRACKING_COLOR
+    assert tuple(out[cy, cx]) == (0, 0, 0)

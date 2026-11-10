@@ -57,6 +57,8 @@ class TrackResult:
         target_id: Tracker ID currently followed, or ``None`` when idle.
         candidates: Candidate boxes that were fed to the tracker this frame.
         note: Optional message for the user, e.g. when the detector found nothing under the click.
+        detection_mode: Whether the target is followed with detector candidates (``True``) or
+            template matching (``False``); selects the on-screen symbol.
     """
 
     status: TrackStatus
@@ -65,6 +67,7 @@ class TrackResult:
     target_id: int | None = None
     candidates: np.ndarray = field(default_factory=lambda: np.empty((0, 4), dtype=np.float32))
     note: str = ""
+    detection_mode: bool = False
 
 
 def masks_available() -> bool:
@@ -160,6 +163,11 @@ class TrackingEngine:
     def target_id(self) -> int | None:
         """Tracker ID of the followed target."""
         return self._target_id
+
+    @property
+    def detection_mode(self) -> bool:
+        """Whether the current target is followed with detector candidates rather than template matching."""
+        return self._generator is not self._template
 
     @property
     def using_fallback(self) -> bool:
@@ -265,7 +273,11 @@ class TrackingEngine:
         if row is None:
             self._lost_frames += 1
             return TrackResult(
-                TrackStatus.LOST, box=self._last_box, target_id=self._target_id, candidates=candidates.xyxy
+                TrackStatus.LOST,
+                box=self._last_box,
+                target_id=self._target_id,
+                candidates=candidates.xyxy,
+                detection_mode=self.detection_mode,
             )
 
         box = clip_box(output.xyxy[row], frame.shape[1], frame.shape[0])
@@ -274,7 +286,12 @@ class TrackingEngine:
         self._last_box = box
         self._generator.update_template(frame, box, score)
         return TrackResult(
-            TrackStatus.TRACKING, box=box, score=score, target_id=self._target_id, candidates=candidates.xyxy
+            TrackStatus.TRACKING,
+            box=box,
+            score=score,
+            target_id=self._target_id,
+            candidates=candidates.xyxy,
+            detection_mode=self.detection_mode,
         )
 
     # ------------------------------------------------------------------ internals
@@ -298,7 +315,14 @@ class TrackingEngine:
         self._target_id = ids[0] if ids else None
         if self._target_id is None:
             return TrackResult(TrackStatus.IDLE, note=note)
-        return TrackResult(TrackStatus.TRACKING, box=box, score=1.0, target_id=self._target_id, note=note)
+        return TrackResult(
+            TrackStatus.TRACKING,
+            box=box,
+            score=1.0,
+            target_id=self._target_id,
+            note=note,
+            detection_mode=self.detection_mode,
+        )
 
     def _reinitialize(self) -> TrackResult | None:
         if self._target_id is not None and self._last_box is not None and self._last_frame is not None:
@@ -349,13 +373,47 @@ class TrackingEngine:
         return (w, h)
 
 
+TRACKING_COLOR = (0, 0, 255)  # red reticle: template-matching tracking
+DETECTION_COLOR = (0, 220, 0)  # green box: detector-based tracking
+LOST_COLOR = (0, 190, 255)  # amber: target lost, last known position
+
+
+def draw_reticle(
+    image: np.ndarray, box: tuple[int, int, int, int], color: tuple[int, int, int], thickness: int = 2
+) -> None:
+    """Draw the tracking reticle: a square with a tick crossing the middle of each side.
+
+    Each tick reaches outward by about a third of the box size and inward by a fifth,
+    leaving the centre of the target unobstructed.
+
+    Args:
+        image: BGR image drawn in place.
+        box: ``x1, y1, x2, y2`` in pixels.
+        color: BGR colour.
+        thickness: Line thickness in pixels.
+    """
+    x1, y1, x2, y2 = box
+    cx, cy = (x1 + x2) // 2, (y1 + y2) // 2
+    w, h = x2 - x1, y2 - y1
+    out_x, out_y = max(4, round(0.36 * w)), max(4, round(0.36 * h))
+    in_x, in_y = max(3, round(0.2 * w)), max(3, round(0.2 * h))
+    cv2.rectangle(image, (x1, y1), (x2, y2), color, thickness, cv2.LINE_AA)
+    cv2.line(image, (cx, y1 - out_y), (cx, y1 + in_y), color, thickness, cv2.LINE_AA)
+    cv2.line(image, (cx, y2 - in_y), (cx, y2 + out_y), color, thickness, cv2.LINE_AA)
+    cv2.line(image, (x1 - out_x, cy), (x1 + in_x, cy), color, thickness, cv2.LINE_AA)
+    cv2.line(image, (x2 - in_x, cy), (x2 + out_x, cy), color, thickness, cv2.LINE_AA)
+
+
 def annotate(frame: np.ndarray, result: TrackResult, show_candidates: bool = False) -> np.ndarray:
     """Draw the tracking result on a copy of ``frame``.
+
+    Template-matching tracking is shown with the red reticle; detector-based tracking with
+    the green box and centre cross. A lost target keeps its symbol, drawn in amber.
 
     Args:
         frame: BGR frame.
         result: Result returned by :class:`TrackingEngine`.
-        show_candidates: Also draw the template-matching candidates.
+        show_candidates: Also draw the candidate boxes fed to the tracker.
 
     Returns:
         Annotated BGR frame.
@@ -369,13 +427,17 @@ def annotate(frame: np.ndarray, result: TrackResult, show_candidates: bool = Fal
         return out
     x1, y1, x2, y2 = (round(v) for v in result.box)
     if result.status is TrackStatus.TRACKING:
-        color = (0, 220, 0)
+        color = DETECTION_COLOR if result.detection_mode else TRACKING_COLOR
         label = f"ID {result.target_id}  {result.score:.2f}"
     else:
-        color = (0, 0, 255)
+        color = LOST_COLOR
         label = "LOST"
-    cv2.rectangle(out, (x1, y1), (x2, y2), color, 2)
-    cx, cy = (x1 + x2) // 2, (y1 + y2) // 2
-    cv2.drawMarker(out, (cx, cy), color, cv2.MARKER_CROSS, 8, 1)
-    cv2.putText(out, label, (x1, max(12, y1 - 6)), cv2.FONT_HERSHEY_SIMPLEX, 0.45, color, 1, cv2.LINE_AA)
+    if result.detection_mode:
+        cv2.rectangle(out, (x1, y1), (x2, y2), color, 2)
+        cv2.drawMarker(out, ((x1 + x2) // 2, (y1 + y2) // 2), color, cv2.MARKER_CROSS, 8, 1)
+        label_y = y1 - 6
+    else:
+        draw_reticle(out, (x1, y1, x2, y2), color)
+        label_y = y1 - max(4, round(0.36 * (y2 - y1))) - 6
+    cv2.putText(out, label, (x1, max(12, label_y)), cv2.FONT_HERSHEY_SIMPLEX, 0.45, color, 1, cv2.LINE_AA)
     return out

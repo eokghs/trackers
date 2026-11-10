@@ -119,3 +119,12 @@ def test_local_weights_and_model_routing(tmp_path, monkeypatch) -> None:
     assert detector.is_ultralytics_model(weights[0])
     assert detector.is_ultralytics_model("yolo26n.pt")
     assert not detector.is_ultralytics_model("yolov8n-640")
+
+
+def test_result_reports_detection_mode() -> None:
+    detector = FakeDetector()
+    engine = TrackingEngine(source=DetectorCandidateSource(detector))
+    assert engine.select_target(frame_at(0), *centre(boxes_at(0)[0])).detection_mode
+    engine.set_candidate_source(None)
+    detector.t = 1
+    assert not engine.process(frame_at(1)).detection_mode
