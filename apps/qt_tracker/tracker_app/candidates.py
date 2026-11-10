@@ -20,6 +20,7 @@ high/low confidence cascades.
 from __future__ import annotations
 
 from dataclasses import dataclass
+from typing import Protocol
 
 import cv2
 import numpy as np
@@ -44,6 +45,24 @@ class Candidates:
 
     def __len__(self) -> int:
         return len(self.scores)
+
+
+class CandidateSource(Protocol):
+    """Anything that turns a gate into a target and frames into candidate boxes."""
+
+    reacquire_score: float
+
+    def initialize(self, frame: np.ndarray, box: np.ndarray) -> np.ndarray | None:
+        """Select the target from the gate ``box``; return its box, or ``None`` if nothing is there."""
+
+    def reset(self) -> None:
+        """Forget the target."""
+
+    def generate(self, frame: np.ndarray, center: tuple[float, float], lost_frames: int = 0) -> Candidates:
+        """Return candidate boxes for ``frame``."""
+
+    def update_template(self, frame: np.ndarray, box: np.ndarray, score: float) -> None:
+        """Adapt to the target's appearance in the tracked ``box``."""
 
 
 def clip_box(box: np.ndarray, width: int, height: int) -> np.ndarray:
@@ -87,6 +106,8 @@ class TemplateCandidateGenerator:
         template_update_score: Minimum score of a tracked box before the
             template is adapted, which prevents learning occluders.
     """
+
+    reacquire_score = 0.8
 
     def __init__(
         self,

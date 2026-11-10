@@ -22,12 +22,16 @@ import cv2
 import numpy as np
 import supervision as sv
 
-from tracker_app.candidates import TemplateCandidateGenerator, box_from_center, clip_box
+from tracker_app.candidates import CandidateSource, TemplateCandidateGenerator, box_from_center, clip_box
 from trackers import CBIoUTracker, McByteTracker
 
 CBIOU = "C-BIoU"
 MCBYTE = "McByte"
 TRACKER_NAMES: tuple[str, ...] = (CBIOU, MCBYTE)
+
+TEMPLATE_SOURCE = "Template matching"
+DETECTOR_SOURCE = "YOLO detector"
+CANDIDATE_SOURCES: tuple[str, ...] = (TEMPLATE_SOURCE, DETECTOR_SOURCE)
 
 DEFAULT_GATE_SIZE = (30, 30)
 MIN_GATE_SIZE = 8
@@ -52,6 +56,9 @@ class TrackResult:
         score: Template correlation score of the tracked box (0 while lost).
         target_id: Tracker ID currently followed, or ``None`` when idle.
         candidates: Candidate boxes that were fed to the tracker this frame.
+        note: Optional message for the user, e.g. when the detector found nothing under the click.
+        detection_mode: Whether the target is followed with detector candidates (``True``) or
+            template matching (``False``); selects the on-screen symbol.
     """
 
     status: TrackStatus
@@ -59,6 +66,8 @@ class TrackResult:
     score: float = 0.0
     target_id: int | None = None
     candidates: np.ndarray = field(default_factory=lambda: np.empty((0, 4), dtype=np.float32))
+    note: str = ""
+    detection_mode: bool = False
 
 
 def masks_available() -> bool:
@@ -101,9 +110,12 @@ class TrackingEngine:
         gate_size: Gate ``(width, height)`` in pixels drawn on click.
         frame_rate: Source frame rate.
         use_masks: Enable McByte's mask pipeline (ignored for C-BIoU).
-        generator: Candidate generator; a default template matcher is used when omitted.
+        source: Candidate source; a template matcher is used when omitted. When
+            the source finds nothing under a click (for example a detector on an
+            unknown object), that target falls back to template matching.
         reacquire_after: Lost frames before another confident track may be adopted.
-        reacquire_score: Minimum correlation score for adopting a new track.
+        reacquire_score: Minimum candidate score for adopting a new track; the
+            source's own ``reacquire_score`` is used when omitted.
     """
 
     def __init__(
@@ -112,15 +124,17 @@ class TrackingEngine:
         gate_size: tuple[int, int] = DEFAULT_GATE_SIZE,
         frame_rate: float = 30.0,
         use_masks: bool = False,
-        generator: TemplateCandidateGenerator | None = None,
+        source: CandidateSource | None = None,
         reacquire_after: int = 5,
-        reacquire_score: float = 0.8,
+        reacquire_score: float | None = None,
     ) -> None:
         self._frame_rate = frame_rate
         self._use_masks = use_masks
         self._tracker_name = tracker_name
         self._tracker = build_tracker(tracker_name, frame_rate, use_masks)
-        self._generator = generator if generator is not None else TemplateCandidateGenerator()
+        self._template = TemplateCandidateGenerator()
+        self._source: CandidateSource = source if source is not None else self._template
+        self._generator: CandidateSource = self._source
         self._gate_size = self._validate_gate(gate_size)
         self.reacquire_after = reacquire_after
         self.reacquire_score = reacquire_score
@@ -150,7 +164,31 @@ class TrackingEngine:
         """Tracker ID of the followed target."""
         return self._target_id
 
+    @property
+    def detection_mode(self) -> bool:
+        """Whether the current target is followed with detector candidates rather than template matching."""
+        return self._generator is not self._template
+
+    @property
+    def using_fallback(self) -> bool:
+        """Whether the current target is followed by template matching instead of the chosen source."""
+        return self._generator is not self._source
+
     # ------------------------------------------------------------------ control
+    def set_candidate_source(self, source: CandidateSource | None) -> TrackResult | None:
+        """Switch how candidate boxes are found; an active target is re-selected at its position.
+
+        Args:
+            source: New candidate source, or ``None`` for template matching.
+
+        Returns:
+            The re-initialised result when a target is active, else ``None``.
+        """
+        self._generator.reset()
+        self._source = source if source is not None else self._template
+        self._generator = self._source
+        return self._reinitialize()
+
     def set_tracker(
         self, name: str, use_masks: bool | None = None, frame_rate: float | None = None
     ) -> TrackResult | None:
@@ -183,9 +221,6 @@ class TrackingEngine:
             The re-initialised result when a target is active, else ``None``.
         """
         self._gate_size = self._validate_gate((width, height))
-        if self._last_box is not None:
-            cx, cy = self._center(self._last_box)
-            self._last_box = box_from_center(cx, cy, *self._gate_size)
         return self._reinitialize()
 
     def select_target(self, frame: np.ndarray, x: float, y: float) -> TrackResult:
@@ -200,8 +235,7 @@ class TrackingEngine:
             Tracking result for ``frame``.
         """
         self._last_frame = frame
-        self._last_box = box_from_center(x, y, *self._gate_size)
-        return self._start(frame, self._last_box)
+        return self._start(frame, box_from_center(x, y, *self._gate_size))
 
     def stop_tracking(self) -> None:
         """Break the track and return to idle."""
@@ -209,6 +243,7 @@ class TrackingEngine:
         self._last_box = None
         self._lost_frames = 0
         self._generator.reset()
+        self._generator = self._source
         self._tracker.reset()
 
     def process(self, frame: np.ndarray) -> TrackResult:
@@ -238,7 +273,11 @@ class TrackingEngine:
         if row is None:
             self._lost_frames += 1
             return TrackResult(
-                TrackStatus.LOST, box=self._last_box, target_id=self._target_id, candidates=candidates.xyxy
+                TrackStatus.LOST,
+                box=self._last_box,
+                target_id=self._target_id,
+                candidates=candidates.xyxy,
+                detection_mode=self.detection_mode,
             )
 
         box = clip_box(output.xyxy[row], frame.shape[1], frame.shape[0])
@@ -247,26 +286,48 @@ class TrackingEngine:
         self._last_box = box
         self._generator.update_template(frame, box, score)
         return TrackResult(
-            TrackStatus.TRACKING, box=box, score=score, target_id=self._target_id, candidates=candidates.xyxy
+            TrackStatus.TRACKING,
+            box=box,
+            score=score,
+            target_id=self._target_id,
+            candidates=candidates.xyxy,
+            detection_mode=self.detection_mode,
         )
 
     # ------------------------------------------------------------------ internals
-    def _start(self, frame: np.ndarray, box: np.ndarray) -> TrackResult:
+    def _start(self, frame: np.ndarray, gate: np.ndarray) -> TrackResult:
         self._tracker.reset()
         self._lost_frames = 0
-        box = self._generator.initialize(frame, box)
+        self._generator.reset()
+        self._generator = self._source
+        note = ""
+        box = self._source.initialize(frame, gate)
+        if box is None:
+            self._generator = self._template
+            box = self._template.initialize(frame, gate)
+            note = "No detected object under the click; tracking this target with template matching."
+        if box is None:
+            return TrackResult(TrackStatus.IDLE, note=note)
         self._last_box = box
         detections = sv.Detections(xyxy=box[None, :].astype(np.float32), confidence=np.array([1.0], dtype=np.float32))
         output = self._update_tracker(detections, frame)
         ids = [int(t) for t in output.tracker_id if t >= 0] if output.tracker_id is not None else []
         self._target_id = ids[0] if ids else None
         if self._target_id is None:
-            return TrackResult(TrackStatus.IDLE)
-        return TrackResult(TrackStatus.TRACKING, box=box, score=1.0, target_id=self._target_id)
+            return TrackResult(TrackStatus.IDLE, note=note)
+        return TrackResult(
+            TrackStatus.TRACKING,
+            box=box,
+            score=1.0,
+            target_id=self._target_id,
+            note=note,
+            detection_mode=self.detection_mode,
+        )
 
     def _reinitialize(self) -> TrackResult | None:
         if self._target_id is not None and self._last_box is not None and self._last_frame is not None:
-            return self._start(self._last_frame, self._last_box)
+            cx, cy = self._center(self._last_box)
+            return self._start(self._last_frame, box_from_center(cx, cy, *self._gate_size))
         self._tracker.reset()
         return None
 
@@ -288,9 +349,10 @@ class TrackingEngine:
     def _reacquire_row(self, output: sv.Detections) -> int | None:
         if output.tracker_id is None or output.confidence is None:
             return None
+        threshold = self.reacquire_score if self.reacquire_score is not None else self._generator.reacquire_score
         best: int | None = None
         for row, (tid, conf) in enumerate(zip(output.tracker_id, output.confidence, strict=True)):
-            if tid >= 0 and conf >= self.reacquire_score and (best is None or conf > output.confidence[best]):
+            if tid >= 0 and conf >= threshold and (best is None or conf > output.confidence[best]):
                 best = row
         return best
 
@@ -311,13 +373,47 @@ class TrackingEngine:
         return (w, h)
 
 
+TRACKING_COLOR = (0, 0, 255)  # red reticle: template-matching tracking
+DETECTION_COLOR = (0, 220, 0)  # green box: detector-based tracking
+LOST_COLOR = (0, 190, 255)  # amber: target lost, last known position
+
+
+def draw_reticle(
+    image: np.ndarray, box: tuple[int, int, int, int], color: tuple[int, int, int], thickness: int = 2
+) -> None:
+    """Draw the tracking reticle: a square with a tick crossing the middle of each side.
+
+    Each tick reaches outward by about a third of the box size and inward by a fifth,
+    leaving the centre of the target unobstructed.
+
+    Args:
+        image: BGR image drawn in place.
+        box: ``x1, y1, x2, y2`` in pixels.
+        color: BGR colour.
+        thickness: Line thickness in pixels.
+    """
+    x1, y1, x2, y2 = box
+    cx, cy = (x1 + x2) // 2, (y1 + y2) // 2
+    w, h = x2 - x1, y2 - y1
+    out_x, out_y = max(4, round(0.36 * w)), max(4, round(0.36 * h))
+    in_x, in_y = max(3, round(0.2 * w)), max(3, round(0.2 * h))
+    cv2.rectangle(image, (x1, y1), (x2, y2), color, thickness, cv2.LINE_AA)
+    cv2.line(image, (cx, y1 - out_y), (cx, y1 + in_y), color, thickness, cv2.LINE_AA)
+    cv2.line(image, (cx, y2 - in_y), (cx, y2 + out_y), color, thickness, cv2.LINE_AA)
+    cv2.line(image, (x1 - out_x, cy), (x1 + in_x, cy), color, thickness, cv2.LINE_AA)
+    cv2.line(image, (x2 - in_x, cy), (x2 + out_x, cy), color, thickness, cv2.LINE_AA)
+
+
 def annotate(frame: np.ndarray, result: TrackResult, show_candidates: bool = False) -> np.ndarray:
     """Draw the tracking result on a copy of ``frame``.
+
+    Template-matching tracking is shown with the red reticle; detector-based tracking with
+    the green box and centre cross. A lost target keeps its symbol, drawn in amber.
 
     Args:
         frame: BGR frame.
         result: Result returned by :class:`TrackingEngine`.
-        show_candidates: Also draw the template-matching candidates.
+        show_candidates: Also draw the candidate boxes fed to the tracker.
 
     Returns:
         Annotated BGR frame.
@@ -331,13 +427,17 @@ def annotate(frame: np.ndarray, result: TrackResult, show_candidates: bool = Fal
         return out
     x1, y1, x2, y2 = (round(v) for v in result.box)
     if result.status is TrackStatus.TRACKING:
-        color = (0, 220, 0)
+        color = DETECTION_COLOR if result.detection_mode else TRACKING_COLOR
         label = f"ID {result.target_id}  {result.score:.2f}"
     else:
-        color = (0, 0, 255)
+        color = LOST_COLOR
         label = "LOST"
-    cv2.rectangle(out, (x1, y1), (x2, y2), color, 2)
-    cx, cy = (x1 + x2) // 2, (y1 + y2) // 2
-    cv2.drawMarker(out, (cx, cy), color, cv2.MARKER_CROSS, 8, 1)
-    cv2.putText(out, label, (x1, max(12, y1 - 6)), cv2.FONT_HERSHEY_SIMPLEX, 0.45, color, 1, cv2.LINE_AA)
+    if result.detection_mode:
+        cv2.rectangle(out, (x1, y1), (x2, y2), color, 2)
+        cv2.drawMarker(out, ((x1 + x2) // 2, (y1 + y2) // 2), color, cv2.MARKER_CROSS, 8, 1)
+        label_y = y1 - 6
+    else:
+        draw_reticle(out, (x1, y1, x2, y2), color)
+        label_y = y1 - max(4, round(0.36 * (y2 - y1))) - 6
+    cv2.putText(out, label, (x1, max(12, label_y)), cv2.FONT_HERSHEY_SIMPLEX, 0.45, color, 1, cv2.LINE_AA)
     return out

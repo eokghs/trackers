@@ -11,7 +11,22 @@ from __future__ import annotations
 from PySide6.QtCore import Property, QObject, QUrl, Signal, Slot
 from PySide6.QtMultimedia import QMediaDevices
 
-from tracker_app.engine import DEFAULT_GATE_SIZE, MCBYTE, TRACKER_NAMES, TrackResult, TrackStatus, masks_available
+from tracker_app.detector import (
+    DEFAULT_DETECTOR_MODEL,
+    default_detector_model,
+    detector_available,
+    detector_model_presets,
+)
+from tracker_app.engine import (
+    CANDIDATE_SOURCES,
+    DEFAULT_GATE_SIZE,
+    MCBYTE,
+    TEMPLATE_SOURCE,
+    TRACKER_NAMES,
+    TrackResult,
+    TrackStatus,
+    masks_available,
+)
 from tracker_app.video_item import VideoFrameItem
 from tracker_app.worker import EngineSettings, SourceSpec, VideoWorker
 
@@ -52,6 +67,10 @@ class AppController(QObject):
         self._use_masks = False
         self._show_candidates = False
         self._masks_available = masks_available()
+        self._detector_available = detector_available()
+        self._candidate_source = TEMPLATE_SOURCE
+        self._detector_models = detector_model_presets()
+        self._detector_model = default_detector_model()
         self._media_devices = QMediaDevices(self)
         self._media_devices.videoInputsChanged.connect(self.camerasChanged)
 
@@ -61,29 +80,126 @@ class AppController(QObject):
         return names if names else ["Camera 0"]
 
     cameras = Property(list, _get_cameras, notify=camerasChanged)
-    trackerNames = Property(list, lambda self: list(TRACKER_NAMES), constant=True)
-    masksAvailable = Property(bool, lambda self: self._masks_available, constant=True)
 
-    running = Property(bool, lambda self: self._running, notify=stateChanged)
-    paused = Property(bool, lambda self: self._paused, notify=stateChanged)
-    saving = Property(bool, lambda self: self._saving, notify=stateChanged)
-    savePath = Property(str, lambda self: self._save_path, notify=stateChanged)
-    sourceLabel = Property(str, lambda self: self._source_label, notify=stateChanged)
-    resolution = Property(str, lambda self: self._resolution, notify=stateChanged)
+    def _get_tracker_names(self) -> list:
+        return list(TRACKER_NAMES)
 
-    status = Property(str, lambda self: self._status, notify=trackChanged)
-    targetId = Property(int, lambda self: self._target_id, notify=trackChanged)
-    score = Property(float, lambda self: self._score, notify=trackChanged)
+    trackerNames = Property(list, _get_tracker_names, constant=True)
 
-    fps = Property(float, lambda self: self._fps, notify=statsChanged)
-    frameIndex = Property(int, lambda self: self._frame_index, notify=statsChanged)
-    frameCount = Property(int, lambda self: self._frame_count, notify=statsChanged)
+    def _get_masks_available(self) -> bool:
+        return self._masks_available
 
-    trackerName = Property(str, lambda self: self._tracker_name, notify=settingsChanged)
-    gateWidth = Property(int, lambda self: self._gate_w, notify=settingsChanged)
-    gateHeight = Property(int, lambda self: self._gate_h, notify=settingsChanged)
-    useMasks = Property(bool, lambda self: self._use_masks, notify=settingsChanged)
-    showCandidates = Property(bool, lambda self: self._show_candidates, notify=settingsChanged)
+    masksAvailable = Property(bool, _get_masks_available, constant=True)
+
+    def _get_candidate_sources(self) -> list:
+        return list(CANDIDATE_SOURCES)
+
+    candidateSources = Property(list, _get_candidate_sources, constant=True)
+
+    def _get_detector_models(self) -> list:
+        return list(self._detector_models)
+
+    detectorModels = Property(list, _get_detector_models, notify=settingsChanged)
+
+    def _get_detector_available(self) -> bool:
+        return self._detector_available
+
+    detectorAvailable = Property(bool, _get_detector_available, constant=True)
+
+    def _get_running(self) -> bool:
+        return self._running
+
+    running = Property(bool, _get_running, notify=stateChanged)
+
+    def _get_paused(self) -> bool:
+        return self._paused
+
+    paused = Property(bool, _get_paused, notify=stateChanged)
+
+    def _get_saving(self) -> bool:
+        return self._saving
+
+    saving = Property(bool, _get_saving, notify=stateChanged)
+
+    def _get_save_path(self) -> str:
+        return self._save_path
+
+    savePath = Property(str, _get_save_path, notify=stateChanged)
+
+    def _get_source_label(self) -> str:
+        return self._source_label
+
+    sourceLabel = Property(str, _get_source_label, notify=stateChanged)
+
+    def _get_resolution(self) -> str:
+        return self._resolution
+
+    resolution = Property(str, _get_resolution, notify=stateChanged)
+
+    def _get_status(self) -> str:
+        return self._status
+
+    status = Property(str, _get_status, notify=trackChanged)
+
+    def _get_target_id(self) -> int:
+        return self._target_id
+
+    targetId = Property(int, _get_target_id, notify=trackChanged)
+
+    def _get_score(self) -> float:
+        return self._score
+
+    score = Property(float, _get_score, notify=trackChanged)
+
+    def _get_fps(self) -> float:
+        return self._fps
+
+    fps = Property(float, _get_fps, notify=statsChanged)
+
+    def _get_frame_index(self) -> int:
+        return self._frame_index
+
+    frameIndex = Property(int, _get_frame_index, notify=statsChanged)
+
+    def _get_frame_count(self) -> int:
+        return self._frame_count
+
+    frameCount = Property(int, _get_frame_count, notify=statsChanged)
+
+    def _get_tracker_name(self) -> str:
+        return self._tracker_name
+
+    trackerName = Property(str, _get_tracker_name, notify=settingsChanged)
+
+    def _get_gate_width(self) -> int:
+        return self._gate_w
+
+    gateWidth = Property(int, _get_gate_width, notify=settingsChanged)
+
+    def _get_gate_height(self) -> int:
+        return self._gate_h
+
+    gateHeight = Property(int, _get_gate_height, notify=settingsChanged)
+
+    def _get_use_masks(self) -> bool:
+        return self._use_masks
+
+    useMasks = Property(bool, _get_use_masks, notify=settingsChanged)
+
+    def _get_show_candidates(self) -> bool:
+        return self._show_candidates
+
+    showCandidates = Property(bool, _get_show_candidates, notify=settingsChanged)
+
+    def _get_candidate_source(self) -> str:
+        return self._candidate_source
+
+    candidateSource = Property(str, _get_candidate_source, notify=settingsChanged)
+
+    def _get_detector_model(self) -> str:
+        return self._detector_model
+
+    detectorModel = Property(str, _get_detector_model, notify=settingsChanged)
 
     # ================================================================ view
     @Slot(QObject)
@@ -189,6 +305,26 @@ class AppController(QObject):
         if self._tracker_name == MCBYTE:
             self._reconfigure_tracker()
 
+    @Slot(str, str)
+    def setCandidateSource(self, name: str, model_id: str) -> None:
+        """Choose template matching or the detector (with model ``model_id``)."""
+        model_id = _local_path(model_id.strip()) or DEFAULT_DETECTOR_MODEL
+        if model_id not in self._detector_models:
+            self._detector_models.insert(0, model_id)
+        if name not in CANDIDATE_SOURCES or (name, model_id) == (self._candidate_source, self._detector_model):
+            return
+        if name != TEMPLATE_SOURCE and not self._detector_available:
+            self.message.emit(
+                "No YOLO backend found: install ultralytics, put it in C:\\Ultralytics\\Yolo26, "
+                "or pip install 'trackers[detection]'"
+            )
+            self.settingsChanged.emit()
+            return
+        self._candidate_source, self._detector_model = name, model_id
+        self.settingsChanged.emit()
+        if self._worker is not None:
+            self._worker.post(lambda worker: worker.set_candidate_source(name, model_id))
+
     @Slot(bool)
     def setShowCandidates(self, enabled: bool) -> None:
         """Toggle drawing of template-matching candidates."""
@@ -242,6 +378,8 @@ class AppController(QObject):
                 gate_size=(self._gate_w, self._gate_h),
                 use_masks=self._use_masks,
                 show_candidates=self._show_candidates,
+                candidate_source=self._candidate_source,
+                detector_model=self._detector_model,
             ),
         )
         if self._view is not None:
@@ -253,6 +391,7 @@ class AppController(QObject):
         worker.sourceEnded.connect(self._on_ended)
         worker.savingChanged.connect(self._on_saving)
         worker.engineError.connect(self.message)
+        worker.candidateSourceChanged.connect(self._on_source_changed)
         worker.finished.connect(self._on_worker_finished)
         self._worker = worker
         self._paused = False
@@ -268,6 +407,7 @@ class AppController(QObject):
         self._worker = None
         worker.request_stop()
         worker.wait(5000)
+        worker.deleteLater()
         self._running = False
         self._paused = False
         self._saving = False
@@ -306,9 +446,21 @@ class AppController(QObject):
             self.message.emit(detail)
         self.stateChanged.emit()
 
+    @Slot(str)
+    def _on_source_changed(self, name: str) -> None:
+        if name != self._candidate_source:
+            self._candidate_source = name
+            self.settingsChanged.emit()
+
     @Slot()
     def _on_worker_finished(self) -> None:
-        if self.sender() is not None and self._worker is not None and self.sender() is not self._worker:
+        sender = self.sender()
+        if isinstance(sender, VideoWorker):
+            # ``finished`` fires just before the thread exits: wait for it, then let Qt delete
+            # the object. Dropping the last Python reference to a still-running QThread aborts the app.
+            sender.wait(2000)
+            sender.deleteLater()
+        if sender is not None and self._worker is not None and sender is not self._worker:
             return
         self._worker = None
         self._running = False

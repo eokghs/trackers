@@ -10,6 +10,7 @@ dependencies = [
 
 [project.optional-dependencies]
 mask = ["trackers[mask]"]
+detection = ["trackers[detection]"]
 
 [tool.pyside6-project]
 files = [
@@ -17,6 +18,7 @@ files = [
     "tracker_app/__init__.py",
     "tracker_app/candidates.py",
     "tracker_app/controller.py",
+    "tracker_app/detector.py",
     "tracker_app/engine.py",
     "tracker_app/video_item.py",
     "tracker_app/worker.py",
@@ -28,6 +30,7 @@ files = [
     "qml/TrackingPane.qml",
     "qml/VideoView.qml",
     "tests/conftest.py",
+    "tests/test_detector.py",
     "tests/test_engine.py",
     "README.md",
 ]

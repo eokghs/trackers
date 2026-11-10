@@ -9,6 +9,7 @@
 from __future__ import annotations
 
 import queue
+import sys
 import time
 from collections.abc import Callable
 from dataclasses import dataclass
@@ -19,7 +20,8 @@ import numpy as np
 from PySide6.QtCore import QThread, Signal
 from PySide6.QtGui import QImage
 
-from tracker_app.engine import TrackingEngine, TrackResult, TrackStatus, annotate
+from tracker_app.detector import DetectorCandidateSource, load_detector
+from tracker_app.engine import DETECTOR_SOURCE, TEMPLATE_SOURCE, TrackingEngine, TrackResult, TrackStatus, annotate
 
 
 @dataclass(frozen=True)
@@ -49,6 +51,8 @@ class EngineSettings:
     gate_size: tuple[int, int]
     use_masks: bool
     show_candidates: bool = False
+    candidate_source: str = TEMPLATE_SOURCE
+    detector_model: str = ""
 
 
 def to_qimage(frame_bgr: np.ndarray) -> QImage:
@@ -59,6 +63,35 @@ def to_qimage(frame_bgr: np.ndarray) -> QImage:
 
 
 Command = Callable[["VideoWorker"], None]
+
+# Consecutive failed camera reads tolerated before the live feed is reported as lost.
+MAX_CAMERA_READ_FAILURES = 30
+
+
+def open_camera(index: int) -> cv2.VideoCapture | None:
+    """Open a camera, trying the backends that work best on this platform first.
+
+    On Windows the DirectShow backend is tried before Media Foundation (MSMF), whose
+    asynchronous reader fails on some webcams with ``can't grab frame`` errors.
+    A backend counts as working only once it has delivered a frame.
+
+    Args:
+        index: Camera index.
+
+    Returns:
+        An opened capture, or ``None`` when no backend delivers frames.
+    """
+    backends = [cv2.CAP_DSHOW, cv2.CAP_MSMF, cv2.CAP_ANY] if sys.platform == "win32" else [cv2.CAP_ANY]
+    for backend in backends:
+        capture = cv2.VideoCapture(index, backend)
+        if capture.isOpened():
+            for _ in range(10):  # some cameras need a few reads to warm up
+                ok, _frame = capture.read()
+                if ok:
+                    return capture
+                time.sleep(0.05)
+        capture.release()
+    return None
 
 
 class VideoWorker(QThread):
@@ -72,6 +105,7 @@ class VideoWorker(QThread):
     sourceEnded = Signal()
     savingChanged = Signal(bool, str)
     engineError = Signal(str)
+    candidateSourceChanged = Signal(str)  # source actually in use after a switch
 
     def __init__(self, source: SourceSpec, settings: EngineSettings, parent=None) -> None:
         super().__init__(parent)
@@ -108,6 +142,23 @@ class VideoWorker(QThread):
         self._emit_track(result)
         self.redraw()
 
+    def set_candidate_source(self, name: str, model_id: str) -> None:
+        """Switch between template matching and the detector, loading the model if needed."""
+        if self.engine is None:
+            return
+        source = None
+        if name == DETECTOR_SOURCE:
+            self.engineError.emit(f"Loading detector {model_id}…")
+            try:
+                source = DetectorCandidateSource(load_detector(model_id))
+            except Exception as exc:
+                self.engineError.emit(f"Detector unavailable, using template matching: {exc}")
+                name = TEMPLATE_SOURCE
+        result = self.engine.set_candidate_source(source)
+        self.candidateSourceChanged.emit(name)
+        if result is not None:
+            self.set_result(result)
+
     def start_saving(self, path: str) -> None:
         """Start writing processed frames to ``path``."""
         self.stop_saving()
@@ -143,10 +194,10 @@ class VideoWorker(QThread):
 
     def _open_capture(self) -> cv2.VideoCapture | None:
         if self._source.kind == "camera":
-            capture = cv2.VideoCapture(self._source.camera_index)
+            capture = open_camera(self._source.camera_index)
         else:
             capture = cv2.VideoCapture(self._source.path)
-        if not capture.isOpened():
+        if capture is None or not capture.isOpened():
             self.sourceFailed.emit(f"Cannot open {self._source.describe()}")
             return None
         fps = capture.get(cv2.CAP_PROP_FPS)
@@ -162,6 +213,8 @@ class VideoWorker(QThread):
             self.engineError.emit(str(exc))
             capture.release()
             return None
+        if self._settings.candidate_source == DETECTOR_SOURCE:
+            self.set_candidate_source(DETECTOR_SOURCE, self._settings.detector_model)
         w = int(capture.get(cv2.CAP_PROP_FRAME_WIDTH))
         h = int(capture.get(cv2.CAP_PROP_FRAME_HEIGHT))
         self.sourceOpened.emit(self._source.describe(), self.fps, w, h)
@@ -174,6 +227,7 @@ class VideoWorker(QThread):
         frame_period = 1.0 / self.fps
         next_due = time.perf_counter()
         fps_window: list[float] = []
+        read_failures = 0
         while not self._stop:
             self._run_commands()
             if self.paused and self.frame is not None:
@@ -187,8 +241,13 @@ class VideoWorker(QThread):
                 if is_file:
                     self.sourceEnded.emit()
                     break
-                self.sourceFailed.emit("Camera stopped delivering frames")
+                read_failures += 1
+                if read_failures < MAX_CAMERA_READ_FAILURES:
+                    time.sleep(0.03)
+                    continue
+                self.sourceFailed.emit("Camera stopped delivering frames. Is another app using it?")
                 break
+            read_failures = 0
             frame_index += 1
             started = time.perf_counter()
             self.frame = frame
@@ -227,6 +286,8 @@ class VideoWorker(QThread):
         self.frameReady.emit(to_qimage(annotated))
 
     def _emit_track(self, result: TrackResult) -> None:
+        if result.note:
+            self.engineError.emit(result.note)
         target = -1 if result.target_id is None else result.target_id
         self.trackUpdated.emit(result.status.value, target, result.score)
 
