@@ -1,0 +1,33 @@
+[project]
+name = "qt-tracker-app"
+version = "0.1.0"
+description = "Qt Quick desktop app for click-to-track video object tracking with C-BIoU and McByte"
+requires-python = ">=3.10"
+dependencies = [
+    "PySide6>=6.5",
+    "trackers",
+]
+
+[project.optional-dependencies]
+mask = ["trackers[mask]"]
+
+[tool.pyside6-project]
+files = [
+    "main.py",
+    "tracker_app/__init__.py",
+    "tracker_app/candidates.py",
+    "tracker_app/controller.py",
+    "tracker_app/engine.py",
+    "tracker_app/video_item.py",
+    "tracker_app/worker.py",
+    "qml/Main.qml",
+    "qml/MessageBar.qml",
+    "qml/SavePane.qml",
+    "qml/SourcePane.qml",
+    "qml/StatusPane.qml",
+    "qml/TrackingPane.qml",
+    "qml/VideoView.qml",
+    "tests/conftest.py",
+    "tests/test_engine.py",
+    "README.md",
+]
